@@ -10,16 +10,26 @@
 
     This script checks:
       - Notepad++ installation version (pre-8.8.9 = vulnerable, pre-8.9.1 = partially patched)
-      - Malware staging directories and specific malicious files
+      - Malware staging directories and specific malicious files (all user profiles)
+      - Hidden attribute on Bluetooth directory (Chrysalis NSIS installer behavior)
       - SHA-1 hashes (Kaspersky) and SHA-256 hashes (Rapid7) of known malicious files
       - Cobalt Strike artifacts in ProgramData\USOShared
-      - Persistence mechanisms (registry Run keys, services, scheduled tasks)
+      - Persistence mechanisms (registry Run keys incl. WOW6432Node, services, scheduled tasks)
       - Running processes associated with the attack
       - Active network connections to known C2 infrastructure
       - DNS cache entries for C2 domains
       - GUP.exe network connections to non-legitimate update sources
       - Hosts file tampering for notepad-plus-plus.org
       - Chrysalis backdoor mutex
+
+    RMM/SYSTEM Account Support:
+      When running as NT AUTHORITY\SYSTEM (typical for RMM tools like ConnectWise, Datto, NinjaRMM),
+      the script automatically enumerates ALL user profiles on the system and checks each one for
+      user-profile-based IOCs. HKCU registry checks use HKU with loaded user SIDs.
+
+    Exit codes (for RMM/automation):
+      0 = No IOCs detected (clean)
+      1 = One or more IOCs detected (compromised)
 
     Sources:
       Kaspersky GReAT  : https://securelist.com/notepad-supply-chain-attack/118708/
@@ -37,10 +47,17 @@
     .\Check-NotepadPlusPlusIOC.ps1 -ExportPath "C:\Reports\npp-ioc-scan.txt"
     Runs all checks and exports results to the specified text file.
 
+.EXAMPLE
+    .\Check-NotepadPlusPlusIOC.ps1 -ExportPath "C:\Logs\npp-scan.txt"; if ($LASTEXITCODE -eq 1) { Write-Host "IOCs FOUND" }
+    RMM integration: check exit code after execution.
+
 .NOTES
     Author  : SysAdminDoc
-    Version : 2.2
+    Version : 2.3
     Date    : 2026-02-04
+    
+    WARNING: Do not dot-source this script (. .\script.ps1) as the exit statement will terminate
+    your session. Use standard execution or call operator (& .\script.ps1).
 #>
 
 [CmdletBinding()]
@@ -73,6 +90,60 @@ function Add-Result {
 }
 
 # ============================================================================
+#  Execution Context Detection (SYSTEM vs User)
+# ============================================================================
+
+$currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$isSystem = $currentIdentity.IsSystem -or ($currentIdentity.User.Value -eq 'S-1-5-18')
+$isAdmin = ([Security.Principal.WindowsPrincipal]$currentIdentity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+# Get all user profiles for SYSTEM account scanning
+function Get-AllUserProfiles {
+    $profiles = [System.Collections.Generic.List[PSCustomObject]]::new()
+    
+    $profileListPath = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList'
+    try {
+        Get-ChildItem -Path $profileListPath -ErrorAction SilentlyContinue | ForEach-Object {
+            $sid = $_.PSChildName
+            # Skip built-in accounts (S-1-5-18 = SYSTEM, S-1-5-19 = LOCAL SERVICE, S-1-5-20 = NETWORK SERVICE)
+            if ($sid -match '^S-1-5-(18|19|20)$') { return }
+            # Skip short SIDs (built-in groups)
+            if ($sid -notmatch '^S-1-5-21-') { return }
+            
+            $profilePath = (Get-ItemProperty -Path $_.PSPath -ErrorAction SilentlyContinue).ProfileImagePath
+            if ($profilePath -and (Test-Path $profilePath)) {
+                # Derive username from profile path
+                $username = Split-Path $profilePath -Leaf
+                $profiles.Add([PSCustomObject]@{
+                    SID = $sid
+                    ProfilePath = $profilePath
+                    Username = $username
+                    AppData = Join-Path $profilePath 'AppData\Roaming'
+                    LocalAppData = Join-Path $profilePath 'AppData\Local'
+                })
+            }
+        }
+    } catch { }
+    
+    return $profiles
+}
+
+# When running as SYSTEM, enumerate all profiles; otherwise use current user's paths
+if ($isSystem) {
+    $userProfiles = Get-AllUserProfiles
+    $scanContext = "SYSTEM (scanning $($userProfiles.Count) user profile(s))"
+} else {
+    $userProfiles = @([PSCustomObject]@{
+        SID = $currentIdentity.User.Value
+        ProfilePath = $env:USERPROFILE
+        Username = $env:USERNAME
+        AppData = $env:APPDATA
+        LocalAppData = $env:LOCALAPPDATA
+    })
+    $scanContext = "User: $env:USERNAME"
+}
+
+# ============================================================================
 #  IOC Definitions
 # ============================================================================
 
@@ -89,13 +160,15 @@ $c2Ips = @(
 )
 
 # --- C2 Domains (Kaspersky + Rapid7) ---
+# NOTE: temp.sh is a legitimate file-sharing service that was used for exfiltration.
+# DNS cache hits for temp.sh on developer workstations may be false positives - investigate context.
 $c2Domains = @(
     'skycloudcenter.com'     # Chrysalis backdoor C2
     'wiresguard.com'         # Cobalt Strike beacon C2
     'cdncheck.it.com'        # C2 (Kaspersky)
     'safe-dns.it.com'        # C2 (Kaspersky)
     'self-dns.it.com'        # C2 (Kaspersky)
-    'temp.sh'                # Anonymous file-sharing (exfiltration)
+    'temp.sh'                # Anonymous file-sharing (exfiltration) - may have false positives
 )
 
 # --- Known malicious SHA-1 hashes (Kaspersky GReAT) ---
@@ -235,57 +308,125 @@ if ($nppPaths.Count -eq 0) {
     }
 }
 
-# Notepad++ plugins directory (user-level)
-$nppPluginPaths = @(
-    "$env:APPDATA\Notepad++\plugins"
-)
-# Also check install-level plugin dirs
-foreach ($nppDir in $nppPaths) {
-    $installPlugins = Join-Path $nppDir 'plugins'
-    if ($installPlugins -and (Test-Path $installPlugins)) {
-        $nppPluginPaths += $installPlugins
-    }
-}
-foreach ($pluginPath in $nppPluginPaths) {
-    if (Test-Path -Path $pluginPath) {
-        $pluginDirs = Get-ChildItem -Path $pluginPath -Directory -Force -ErrorAction SilentlyContinue |
+# Notepad++ plugins directory - check all user profiles
+foreach ($profile in $userProfiles) {
+    $userPluginPath = Join-Path $profile.AppData 'Notepad++\plugins'
+    if (Test-Path -Path $userPluginPath) {
+        $pluginDirs = Get-ChildItem -Path $userPluginPath -Directory -Force -ErrorAction SilentlyContinue |
                       Select-Object -ExpandProperty Name
-        $nonDefault = $pluginDirs | Where-Object { $_ -ne 'Config' -and $_ -ne 'config' -and $_ -ne 'doc' -and $_ -ne 'disabled' }
+        $nonDefault = $pluginDirs | Where-Object { $_ -notin @('Config', 'config', 'doc', 'disabled') }
         if ($nonDefault) {
-            Add-Result -Section $sectionName -Check "Plugins ($pluginPath)" -Status 'WARNING' `
-                       -Details "Review manually: $($nonDefault -join ', ')"
+            Add-Result -Section $sectionName -Check "Plugins ($($profile.Username))" -Status 'WARNING' `
+                       -Details "Review manually: $($nonDefault -join ', ') [$userPluginPath]"
         } else {
-            Add-Result -Section $sectionName -Check "Plugins ($pluginPath)" -Status 'CLEAN' `
+            Add-Result -Section $sectionName -Check "Plugins ($($profile.Username))" -Status 'CLEAN' `
                        -Details 'Only default plugin content found'
         }
     }
 }
 
+# Also check install-level plugin dirs
+foreach ($nppDir in $nppPaths) {
+    $installPlugins = Join-Path $nppDir 'plugins'
+    if ($installPlugins -and (Test-Path $installPlugins)) {
+        $pluginDirs = Get-ChildItem -Path $installPlugins -Directory -Force -ErrorAction SilentlyContinue |
+                      Select-Object -ExpandProperty Name
+        $nonDefault = $pluginDirs | Where-Object { $_ -notin @('Config', 'config', 'doc', 'disabled') }
+        if ($nonDefault) {
+            Add-Result -Section $sectionName -Check "Plugins ($installPlugins)" -Status 'WARNING' `
+                       -Details "Review manually: $($nonDefault -join ', ')"
+        }
+    }
+}
+
 # ============================================================================
-#  Section 2: File System IOCs
+#  Section 2: File System IOCs (Per-User Profile)
 # ============================================================================
 
 $sectionName = 'File System'
 
-# --- Malware staging directories (NOT legitimate Windows paths - safe to flag) ---
-$malwareDirs = @(
-    @{ Name = '%APPDATA%\ProShow';          Path = "$env:APPDATA\ProShow";         Note = 'Payload staging (Chain 1 + 2)' }
-    @{ Name = '%APPDATA%\Bluetooth';        Path = "$env:APPDATA\Bluetooth";       Note = 'Chrysalis backdoor staging (Chain 3)' }
-)
+foreach ($profile in $userProfiles) {
+    $userLabel = if ($userProfiles.Count -gt 1) { " [$($profile.Username)]" } else { '' }
+    $appData = $profile.AppData
+    $localAppData = $profile.LocalAppData
 
-foreach ($dir in $malwareDirs) {
-    if (Test-Path -Path $dir.Path) {
-        $files = Get-ChildItem -Path $dir.Path -Recurse -Force -ErrorAction SilentlyContinue
-        $fileList = ($files | Select-Object -ExpandProperty Name) -join ', '
-        Add-Result -Section $sectionName -Check "$($dir.Name) directory" -Status 'FOUND' `
-                   -Details "$($dir.Note) -- Contains $($files.Count) item(s): $fileList"
-    } else {
-        Add-Result -Section $sectionName -Check "$($dir.Name) directory" -Status 'CLEAN' `
-                   -Details 'Not found'
+    # --- Malware staging directories (NOT legitimate Windows paths - safe to flag) ---
+    $malwareDirs = @(
+        @{ Name = '%APPDATA%\ProShow';          Path = "$appData\ProShow";         Note = 'Payload staging (Chain 1 + 2)' }
+        @{ Name = '%APPDATA%\Bluetooth';        Path = "$appData\Bluetooth";       Note = 'Chrysalis backdoor staging (Chain 3)' }
+    )
+
+    foreach ($dir in $malwareDirs) {
+        if (Test-Path -Path $dir.Path) {
+            $files = Get-ChildItem -Path $dir.Path -Recurse -Force -ErrorAction SilentlyContinue
+            $fileList = ($files | Select-Object -ExpandProperty Name) -join ', '
+            Add-Result -Section $sectionName -Check "$($dir.Name)$userLabel" -Status 'FOUND' `
+                       -Details "$($dir.Note) -- Contains $($files.Count) item(s): $fileList"
+        } else {
+            Add-Result -Section $sectionName -Check "$($dir.Name)$userLabel" -Status 'CLEAN' `
+                       -Details 'Not found'
+        }
+    }
+
+    # Hidden attribute check - Chrysalis NSIS installer sets Hidden flag on %AppData%\Bluetooth
+    $bluetoothDir = "$appData\Bluetooth"
+    if (Test-Path -Path $bluetoothDir) {
+        $btItem = Get-Item -Path $bluetoothDir -Force -ErrorAction SilentlyContinue
+        if ($btItem -and ($btItem.Attributes -band [System.IO.FileAttributes]::Hidden)) {
+            Add-Result -Section $sectionName -Check "Bluetooth Hidden attr$userLabel" -Status 'FOUND' `
+                       -Details 'Directory has Hidden attribute set -- matches Chrysalis NSIS installer behavior'
+        } else {
+            Add-Result -Section $sectionName -Check "Bluetooth Hidden attr$userLabel" -Status 'FOUND' `
+                       -Details 'Directory exists but is NOT hidden (atypical for Chrysalis install)'
+        }
+    }
+
+    # --- Legitimate directories - only flag if specific malicious artifacts are present ---
+    # Adobe\Scripts may be a legitimate Adobe directory
+    $adobeScriptsPath = "$appData\Adobe\Scripts"
+    if (Test-Path $adobeScriptsPath) {
+        if (Test-Path "$adobeScriptsPath\alien.ini") {
+            Add-Result -Section $sectionName -Check "%APPDATA%\Adobe\Scripts$userLabel" -Status 'FOUND' `
+                       -Details 'Contains alien.ini malware configuration file'
+        } else {
+            Add-Result -Section $sectionName -Check "%APPDATA%\Adobe\Scripts$userLabel" -Status 'CLEAN' `
+                       -Details 'Legitimate Adobe directory (no malicious artifacts)'
+        }
+    }
+
+    # --- Specific malicious files ---
+    $malwareFiles = @(
+        # Chain 1 + 2: ProShow staging
+        @{ Name = 'Payload loader (load)';              Path = "$appData\ProShow\load";                    Note = 'Kaspersky Chain 1+2 payload' }
+        # Config
+        @{ Name = 'Config (alien.ini)';                  Path = "$appData\Adobe\Scripts\alien.ini";         Note = 'Malware configuration file' }
+        # Chain 3: Chrysalis backdoor components
+        @{ Name = 'BluetoothService.exe';                Path = "$appData\Bluetooth\BluetoothService.exe";  Note = 'Renamed Bitdefender Submission Wizard (DLL sideloading)' }
+        @{ Name = 'BluetoothService (shellcode)';        Path = "$appData\Bluetooth\BluetoothService";      Note = 'Encrypted Chrysalis backdoor shellcode' }
+        @{ Name = 'log.dll (sideload DLL)';              Path = "$appData\Bluetooth\log.dll";                Note = 'Malicious DLL - decrypts and executes Chrysalis' }
+        # NSIS temp artifacts
+        @{ Name = 'NSIS temp (ns.tmp)';                  Path = "$localAppData\Temp\ns.tmp";                Note = 'NSIS installer temp file' }
+        # Recon output
+        @{ Name = 'Recon output (1.txt)';                Path = "$localAppData\Temp\1.txt";                 Note = 'Reconnaissance output' }
+        @{ Name = 'Recon output (a.txt)';                Path = "$localAppData\Temp\a.txt";                 Note = 'Reconnaissance output' }
+        # Self-removal batch
+        @{ Name = 'Self-removal (u.bat)';                Path = "$localAppData\Temp\u.bat";                 Note = 'Chrysalis self-removal batch script' }
+    )
+
+    foreach ($file in $malwareFiles) {
+        if (Test-Path -Path $file.Path) {
+            $info = Get-Item -Path $file.Path -Force -ErrorAction SilentlyContinue
+            Add-Result -Section $sectionName -Check "$($file.Name)$userLabel" -Status 'FOUND' `
+                       -Details "$($file.Note) -- Size: $($info.Length) bytes, Modified: $($info.LastWriteTime)"
+        }
+        # Only report CLEAN for first user to avoid spam
+        elseif ($userProfiles.Count -eq 1) {
+            Add-Result -Section $sectionName -Check $file.Name -Status 'CLEAN' -Details 'Not found'
+        }
     }
 }
 
-# --- Legitimate directories - only flag if specific malicious artifacts are present ---
+# --- System-wide checks (ProgramData) - only check once ---
 # USOShared is a legitimate Windows Update directory (Update Session Orchestrator)
 $usoPath = "$env:ProgramData\USOShared"
 $usoMalwareFiles = @('svchost.exe', 'conf.c', 'libtcc.dll')
@@ -303,89 +444,74 @@ if (Test-Path $usoPath) {
                -Details 'Directory not present'
 }
 
-# Adobe\Scripts may be a legitimate Adobe directory
-$adobeScriptsPath = "$env:APPDATA\Adobe\Scripts"
-if (Test-Path $adobeScriptsPath) {
-    if (Test-Path "$adobeScriptsPath\alien.ini") {
-        Add-Result -Section $sectionName -Check '%APPDATA%\Adobe\Scripts' -Status 'FOUND' `
-                   -Details 'Contains alien.ini malware configuration file'
-    } else {
-        Add-Result -Section $sectionName -Check '%APPDATA%\Adobe\Scripts' -Status 'CLEAN' `
-                   -Details 'Legitimate Adobe directory (no malicious artifacts)'
-    }
-} else {
-    Add-Result -Section $sectionName -Check '%APPDATA%\Adobe\Scripts' -Status 'CLEAN' `
-               -Details 'Not found'
-}
-
-# --- Specific malicious files ---
-$malwareFiles = @(
-    # Chain 1 + 2: ProShow staging
-    @{ Name = 'Payload loader (load)';              Path = "$env:APPDATA\ProShow\load";                    Note = 'Kaspersky Chain 1+2 payload' }
-    # Config
-    @{ Name = 'Config (alien.ini)';                  Path = "$env:APPDATA\Adobe\Scripts\alien.ini";         Note = 'Malware configuration file' }
-    # Chain 3: Chrysalis backdoor components
-    @{ Name = 'BluetoothService.exe';                Path = "$env:APPDATA\Bluetooth\BluetoothService.exe";  Note = 'Renamed Bitdefender Submission Wizard (DLL sideloading)' }
-    @{ Name = 'BluetoothService (shellcode)';        Path = "$env:APPDATA\Bluetooth\BluetoothService";      Note = 'Encrypted Chrysalis backdoor shellcode' }
-    @{ Name = 'log.dll (sideload DLL)';              Path = "$env:APPDATA\Bluetooth\log.dll";                Note = 'Malicious DLL - decrypts and executes Chrysalis' }
-    # Cobalt Strike artifacts
+# Cobalt Strike artifacts in USOShared
+$usoFiles = @(
     @{ Name = 'USOShared svchost.exe';               Path = "$env:ProgramData\USOShared\svchost.exe";       Note = 'Renamed Tiny C Compiler (loads conf.c shellcode)' }
     @{ Name = 'USOShared conf.c';                    Path = "$env:ProgramData\USOShared\conf.c";            Note = 'Metasploit block_api shellcode loader for CS beacon' }
     @{ Name = 'USOShared libtcc.dll';                Path = "$env:ProgramData\USOShared\libtcc.dll";        Note = 'Tiny C Compiler library (used with renamed svchost)' }
-    # NSIS temp artifacts
-    @{ Name = 'NSIS temp (ns.tmp)';                  Path = "$env:LOCALAPPDATA\Temp\ns.tmp";                Note = 'NSIS installer temp file' }
-    # Recon output
-    @{ Name = 'Recon output (1.txt)';                Path = "$env:LOCALAPPDATA\Temp\1.txt";                 Note = 'Reconnaissance output' }
-    @{ Name = 'Recon output (a.txt)';                Path = "$env:LOCALAPPDATA\Temp\a.txt";                 Note = 'Reconnaissance output' }
-    # Self-removal batch
-    @{ Name = 'Self-removal (u.bat)';                Path = "$env:LOCALAPPDATA\Temp\u.bat";                 Note = 'Chrysalis self-removal batch script' }
 )
-
-foreach ($file in $malwareFiles) {
+foreach ($file in $usoFiles) {
     if (Test-Path -Path $file.Path) {
         $info = Get-Item -Path $file.Path -Force -ErrorAction SilentlyContinue
         Add-Result -Section $sectionName -Check $file.Name -Status 'FOUND' `
                    -Details "$($file.Note) -- Size: $($info.Length) bytes, Modified: $($info.LastWriteTime), Path: $($file.Path)"
-    } else {
-        Add-Result -Section $sectionName -Check $file.Name -Status 'CLEAN' -Details 'Not found'
     }
 }
 
 # ============================================================================
-#  Section 3: Hash Verification
+#  Section 3: Hash Verification (Per-User Profile)
 # ============================================================================
 
 $sectionName = 'Hash Verification'
-
-$hashScanPaths = @(
-    "$env:APPDATA\ProShow"
-    "$env:APPDATA\Adobe\Scripts"
-    "$env:APPDATA\Bluetooth"
-    "$env:ProgramData\USOShared"
-)
 
 $sha1Matches  = [System.Collections.Generic.List[string]]::new()
 $sha256Matches = [System.Collections.Generic.List[string]]::new()
 $filesScanned = 0
 
-foreach ($dir in $hashScanPaths) {
-    if (Test-Path -Path $dir) {
-        $filesToScan = Get-ChildItem -Path $dir -File -Recurse -Force -ErrorAction SilentlyContinue
-        foreach ($f in $filesToScan) {
-            $filesScanned++
-            try {
-                $sha1Hash = (Get-FileHash -Path $f.FullName -Algorithm SHA1 -ErrorAction Stop).Hash.ToLower()
-                if ($knownSha1 -contains $sha1Hash) {
-                    $sha1Matches.Add("$($f.FullName) [SHA1: $sha1Hash]")
-                }
-            } catch { }
-            try {
-                $sha256Hash = (Get-FileHash -Path $f.FullName -Algorithm SHA256 -ErrorAction Stop).Hash.ToLower()
-                if ($knownSha256 -contains $sha256Hash) {
-                    $sha256Matches.Add("$($f.FullName) [SHA256: $sha256Hash]")
-                }
-            } catch { }
+foreach ($profile in $userProfiles) {
+    $appData = $profile.AppData
+    
+    $hashScanPaths = @(
+        "$appData\ProShow"
+        "$appData\Adobe\Scripts"
+        "$appData\Bluetooth"
+    )
+
+    foreach ($dir in $hashScanPaths) {
+        if (Test-Path -Path $dir) {
+            $filesToScan = Get-ChildItem -Path $dir -File -Recurse -Force -ErrorAction SilentlyContinue
+            foreach ($f in $filesToScan) {
+                $filesScanned++
+                try {
+                    $sha1Hash = (Get-FileHash -Path $f.FullName -Algorithm SHA1 -ErrorAction Stop).Hash.ToLower()
+                    if ($knownSha1 -contains $sha1Hash) {
+                        $sha1Matches.Add("$($f.FullName) [SHA1: $sha1Hash]")
+                    }
+                } catch { }
+                try {
+                    $sha256Hash = (Get-FileHash -Path $f.FullName -Algorithm SHA256 -ErrorAction Stop).Hash.ToLower()
+                    if ($knownSha256 -contains $sha256Hash) {
+                        $sha256Matches.Add("$($f.FullName) [SHA256: $sha256Hash]")
+                    }
+                } catch { }
+            }
         }
+    }
+}
+
+# Also scan ProgramData\USOShared
+if (Test-Path "$env:ProgramData\USOShared") {
+    $filesToScan = Get-ChildItem -Path "$env:ProgramData\USOShared" -File -Recurse -Force -ErrorAction SilentlyContinue
+    foreach ($f in $filesToScan) {
+        $filesScanned++
+        try {
+            $sha1Hash = (Get-FileHash -Path $f.FullName -Algorithm SHA1 -ErrorAction Stop).Hash.ToLower()
+            if ($knownSha1 -contains $sha1Hash) { $sha1Matches.Add("$($f.FullName) [SHA1: $sha1Hash]") }
+        } catch { }
+        try {
+            $sha256Hash = (Get-FileHash -Path $f.FullName -Algorithm SHA256 -ErrorAction Stop).Hash.ToLower()
+            if ($knownSha256 -contains $sha256Hash) { $sha256Matches.Add("$($f.FullName) [SHA256: $sha256Hash]") }
+        } catch { }
     }
 }
 
@@ -411,18 +537,17 @@ if ($sha256Matches.Count -gt 0) {
 
 $sectionName = 'Persistence'
 
-# Registry Run keys - Chrysalis falls back to HKCU Run key if service creation fails
-$runKeyPaths = @(
-    'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
-    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
-    'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'
-    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'
-)
-
+# Registry Run keys - check HKLM (always accessible) and HKCU/HKU (per-user)
 $suspiciousRunEntries = [System.Collections.Generic.List[string]]::new()
 $suspiciousValuePatterns = @('BluetoothService', 'ProShow', 'USOShared', 'svchost.*-nostdlib', 'svchost.*conf\.c', 'log\.dll')
 
-foreach ($rkPath in $runKeyPaths) {
+# HKLM Run keys (always accessible)
+$hklmRunKeys = @(
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'
+    'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run'
+)
+foreach ($rkPath in $hklmRunKeys) {
     try {
         if (Test-Path $rkPath) {
             $props = Get-ItemProperty -Path $rkPath -ErrorAction SilentlyContinue
@@ -432,12 +557,67 @@ foreach ($rkPath in $runKeyPaths) {
                     foreach ($pattern in $suspiciousValuePatterns) {
                         if ($val -match $pattern) {
                             $suspiciousRunEntries.Add("$rkPath\$($_.Name) = $val")
+                            break  # Fixed: prevent duplicate entries
                         }
                     }
                 }
             }
         }
     } catch { }
+}
+
+# HKCU Run keys - when running as SYSTEM, check HKU for each loaded user hive
+if ($isSystem) {
+    # Map HKU to check loaded user hives
+    foreach ($profile in $userProfiles) {
+        $hkuPath = "Registry::HKEY_USERS\$($profile.SID)"
+        $userRunKeys = @(
+            "$hkuPath\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+            "$hkuPath\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce"
+        )
+        foreach ($rkPath in $userRunKeys) {
+            try {
+                if (Test-Path $rkPath) {
+                    $props = Get-ItemProperty -Path $rkPath -ErrorAction SilentlyContinue
+                    if ($props) {
+                        $props.PSObject.Properties | Where-Object { $_.Name -notmatch '^PS' } | ForEach-Object {
+                            $val = [string]$_.Value
+                            foreach ($pattern in $suspiciousValuePatterns) {
+                                if ($val -match $pattern) {
+                                    $suspiciousRunEntries.Add("HKU\$($profile.Username)\...\Run\$($_.Name) = $val")
+                                    break
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch { }
+        }
+    }
+} else {
+    # Running as user - check HKCU directly
+    $hkcuRunKeys = @(
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'
+    )
+    foreach ($rkPath in $hkcuRunKeys) {
+        try {
+            if (Test-Path $rkPath) {
+                $props = Get-ItemProperty -Path $rkPath -ErrorAction SilentlyContinue
+                if ($props) {
+                    $props.PSObject.Properties | Where-Object { $_.Name -notmatch '^PS' } | ForEach-Object {
+                        $val = [string]$_.Value
+                        foreach ($pattern in $suspiciousValuePatterns) {
+                            if ($val -match $pattern) {
+                                $suspiciousRunEntries.Add("$rkPath\$($_.Name) = $val")
+                                break
+                            }
+                        }
+                    }
+                }
+            }
+        } catch { }
+    }
 }
 
 if ($suspiciousRunEntries.Count -gt 0) {
@@ -538,8 +718,9 @@ try {
     $gupProcs = Get-Process -Name 'GUP' -ErrorAction SilentlyContinue
     if ($gupProcs) {
         $gupPids = $gupProcs | Select-Object -ExpandProperty Id
+        # Fixed: exclude all loopback addresses
         $gupConnections = Get-NetTCPConnection -ErrorAction SilentlyContinue |
-                          Where-Object { $gupPids -contains $_.OwningProcess -and $_.RemoteAddress -ne '0.0.0.0' -and $_.RemoteAddress -ne '::' }
+                          Where-Object { $gupPids -contains $_.OwningProcess -and $_.RemoteAddress -notin @('0.0.0.0', '::', '127.0.0.1', '::1') }
         if ($gupConnections) {
             $suspiciousGup = $gupConnections | Where-Object { $c2Ips -contains $_.RemoteAddress }
             if ($suspiciousGup) {
@@ -649,8 +830,10 @@ try {
 
     if ($matchedDns) {
         $found = ($matchedDns | Select-Object -ExpandProperty Entry -Unique) -join ', '
+        # Note about temp.sh false positives
+        $fpNote = if ($found -match 'temp\.sh') { ' (NOTE: temp.sh is a legitimate service that may have false positives)' } else { '' }
         Add-Result -Section $sectionName -Check 'DNS cache: C2 domains' -Status 'FOUND' `
-                   -Details "Resolved: $found"
+                   -Details "Resolved: $found$fpNote"
     } else {
         Add-Result -Section $sectionName -Check 'DNS cache: C2 domains' -Status 'CLEAN' `
                    -Details 'No C2 domains found in DNS cache'
@@ -692,12 +875,12 @@ $duration = $scanEnd - $scanStart
 $header = @"
 
 ================================================================================
-  Notepad++ Supply Chain Attack IOC Scanner v2.2
+  Notepad++ Supply Chain Attack IOC Scanner v2.3
   Lotus Blossom / Chrysalis Backdoor (Jun-Dec 2025)
 ================================================================================
   Machine  : $env:COMPUTERNAME
-  User     : $env:USERDOMAIN\$env:USERNAME
-  Elevated : $([bool](New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
+  Context  : $scanContext
+  Elevated : $isAdmin
   Scanned  : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
   Duration : $($duration.TotalSeconds.ToString('0.00'))s
 ================================================================================
@@ -758,21 +941,32 @@ foreach ($sl in $summaryLines) {
 }
 
 Write-Host ''
+$recommendedActions = @()
 if ($foundCount -gt 0) {
     $resultMsg = "RESULT: $foundCount indicator(s) of compromise detected. Investigate immediately."
     Write-Host $resultMsg -ForegroundColor Red
     Write-Host ''
     Write-Host '  Recommended immediate actions:' -ForegroundColor Red
-    Write-Host '    1. Isolate this machine from the network' -ForegroundColor Yellow
-    Write-Host '    2. Preserve forensic evidence (memory dump, disk image)' -ForegroundColor Yellow
-    Write-Host '    3. Engage your incident response team' -ForegroundColor Yellow
-    Write-Host '    4. Review Rapid7 report for full Chrysalis analysis' -ForegroundColor Yellow
-    Write-Host '    5. Update Notepad++ to v8.9.1+ via manual download from GitHub' -ForegroundColor Yellow
+    $recommendedActions = @(
+        '1. Isolate this machine from the network'
+        '2. Preserve forensic evidence (memory dump, disk image)'
+        '3. Engage your incident response team'
+        '4. Review Rapid7 report for full Chrysalis analysis'
+        '5. Update Notepad++ to v8.9.1+ via manual download from GitHub'
+    )
+    foreach ($action in $recommendedActions) {
+        Write-Host "    $action" -ForegroundColor Yellow
+    }
 } elseif ($warningCount -gt 0) {
     $resultMsg = "RESULT: No confirmed IOCs, but $warningCount warning(s) require review."
     Write-Host $resultMsg -ForegroundColor Yellow
-    Write-Host '  - Ensure Notepad++ is updated to v8.9.1+ (full signature validation)' -ForegroundColor Yellow
-    Write-Host '  - Block GUP.exe internet access or route updates through internal repo' -ForegroundColor Yellow
+    $recommendedActions = @(
+        '- Ensure Notepad++ is updated to v8.9.1+ (full signature validation)'
+        '- Block GUP.exe internet access or route updates through internal repo'
+    )
+    foreach ($action in $recommendedActions) {
+        Write-Host "  $action" -ForegroundColor Yellow
+    }
 } else {
     $resultMsg = 'RESULT: No indicators of compromise detected.'
     Write-Host $resultMsg -ForegroundColor Green
@@ -786,11 +980,18 @@ if ($ExportPath) {
         if ($exportDir -and -not (Test-Path $exportDir)) {
             New-Item -Path $exportDir -ItemType Directory -Force | Out-Null
         }
+        # Build full report including recommended actions
+        $actionSection = if ($recommendedActions.Count -gt 0) {
+            "`n  Recommended Actions:`n    " + ($recommendedActions -join "`n    ") + "`n"
+        } else { '' }
         $fullReport = $header + $reportBody.ToString() + ('=' * 80) + "`n" +
-                      ($summaryLines -join "`n") + "`n`n" + $resultMsg + "`n"
+                      ($summaryLines -join "`n") + "`n`n" + $resultMsg + $actionSection
         $fullReport | Out-File -FilePath $ExportPath -Encoding UTF8 -Force
         Write-Host "Report exported to: $ExportPath" -ForegroundColor Cyan
     } catch {
         Write-Host "ERROR: Could not export report - $($_.Exception.Message)" -ForegroundColor Red
     }
 }
+
+# Exit code for RMM/automation: 1 = IOCs found, 0 = clean
+exit $(if ($foundCount -gt 0) { 1 } else { 0 })

@@ -145,12 +145,4 @@ The GUI provides automated remediation that:
 | 2.2 | 2026-02-04 | USOShared false positive fix; Adobe\Scripts smart detection |
 | 2.1 | 2026-02-03 | Hidden Bluetooth directory detection |
 | 2.0 | 2026-02-02 | GUI remediator; comprehensive IOC coverage |
-| 1.0 | 2026-02-01 | Initial release |
-
-## License
-
-MIT License - Use freely for incident response and security assessment.
-
-## Author
-
-SysAdminDoc
+| 1.0 | 2026-02-01 | Initial release 

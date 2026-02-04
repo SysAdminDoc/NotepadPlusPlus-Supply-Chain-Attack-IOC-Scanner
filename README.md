@@ -6,6 +6,16 @@ Attributed to Chinese APT **Lotus Blossom** (Billbug / Raspberry Typhoon), this 
 
 This tool provides both a **GUI** (WPF) and **CLI** scanner with full IOC coverage compiled from Kaspersky GReAT and Rapid7 Labs research, plus automated remediation capabilities.
 
+<img width="1434" height="967" alt="2026-02-04 10_02_40-Notepad++ IOC Scanner v2 1" src="https://github.com/user-attachments/assets/21e257ad-fc4f-4580-b026-9f4844e27096" />
+
+## Quick Start
+
+**One-line run** (Run as Administrator in PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/SysAdminDoc/NotepadPlusPlus-Supply-Chain-Attack-IOC-Scanner/refs/heads/main/Check-NotepadPlusPlusIOC-GUI.ps1 | iex
+```
+
 ---
 
 ## Features

@@ -39,7 +39,7 @@
 
 .NOTES
     Author  : SysAdminDoc
-    Version : 2.0
+    Version : 2.2
     Date    : 2026-02-04
 #>
 
@@ -362,7 +362,6 @@ $hashScanPaths = @(
     "$env:APPDATA\Adobe\Scripts"
     "$env:APPDATA\Bluetooth"
     "$env:ProgramData\USOShared"
-    "$env:LOCALAPPDATA\Temp"
 )
 
 $sha1Matches  = [System.Collections.Generic.List[string]]::new()
@@ -535,7 +534,6 @@ if ($runningProcs) {
 }
 
 # Check for GUP.exe with active network connections to non-legitimate targets
-$legitimateGupDomains = @('notepad-plus-plus.org', 'github.com', 'githubusercontent.com')
 try {
     $gupProcs = Get-Process -Name 'GUP' -ErrorAction SilentlyContinue
     if ($gupProcs) {
@@ -694,7 +692,7 @@ $duration = $scanEnd - $scanStart
 $header = @"
 
 ================================================================================
-  Notepad++ Supply Chain Attack IOC Scanner v2.0
+  Notepad++ Supply Chain Attack IOC Scanner v2.2
   Lotus Blossom / Chrysalis Backdoor (Jun-Dec 2025)
 ================================================================================
   Machine  : $env:COMPUTERNAME

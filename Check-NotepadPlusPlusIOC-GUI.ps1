@@ -8,7 +8,7 @@
     Sources: Kaspersky GReAT, Rapid7 Labs, Notepad++ official disclosure.
 .NOTES
     Author  : SysAdminDoc
-    Version : 2.1 GUI
+    Version : 2.2 GUI
     Date    : 2026-02-04
 #>
 
@@ -20,7 +20,7 @@ Add-Type -AssemblyName WindowsBase
 <Window
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    Title="Notepad++ IOC Scanner v2.1"
+    Title="Notepad++ IOC Scanner v2.2"
     Width="1160" Height="780" MinWidth="900" MinHeight="600"
     WindowStartupLocation="CenterScreen"
     Background="#1B1B2F" Foreground="#E8E8F0"
@@ -238,7 +238,7 @@ Add-Type -AssemblyName WindowsBase
                         </Viewbox>
                         <TextBlock Text="Notepad++ Supply Chain IOC Scanner" FontSize="20" FontWeight="Bold" Foreground="#E8E8F0" VerticalAlignment="Center"/>
                     </StackPanel>
-                    <TextBlock Margin="32,4,0,0" FontSize="11.5" Foreground="#8888A8" Text="Lotus Blossom / Chrysalis Backdoor Detection + Remediation  --  v2.1"/>
+                    <TextBlock Margin="32,4,0,0" FontSize="11.5" Foreground="#8888A8" Text="Lotus Blossom / Chrysalis Backdoor Detection + Remediation  --  v2.2"/>
                 </StackPanel>
                 <StackPanel Grid.Column="1" VerticalAlignment="Center">
                     <TextBlock FontSize="10.5" Foreground="#7878A0" TextAlignment="Right">
@@ -545,7 +545,7 @@ $scanScript = {
 function Build-ReportText {
     $sb = [System.Text.StringBuilder]::new()
     [void]$sb.AppendLine('=' * 80)
-    [void]$sb.AppendLine('  Notepad++ Supply Chain IOC Scanner v2.1 - Report')
+    [void]$sb.AppendLine('  Notepad++ Supply Chain IOC Scanner v2.2 - Report')
     [void]$sb.AppendLine('=' * 80)
     [void]$sb.AppendLine("  Machine  : $env:COMPUTERNAME")
     [void]$sb.AppendLine("  User     : $env:USERDOMAIN\$env:USERNAME")

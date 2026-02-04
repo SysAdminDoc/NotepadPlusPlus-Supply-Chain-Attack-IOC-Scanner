@@ -8,7 +8,7 @@
     Sources: Kaspersky GReAT, Rapid7 Labs, Notepad++ official disclosure.
 .NOTES
     Author  : SysAdminDoc
-    Version : 2.2 GUI
+    Version : 2.3 GUI
     Date    : 2026-02-04
 #>
 
@@ -20,7 +20,7 @@ Add-Type -AssemblyName WindowsBase
 <Window
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    Title="Notepad++ IOC Scanner v2.2"
+    Title="Notepad++ IOC Scanner v2.3"
     Width="1160" Height="780" MinWidth="900" MinHeight="600"
     WindowStartupLocation="CenterScreen"
     Background="#1B1B2F" Foreground="#E8E8F0"
@@ -238,7 +238,7 @@ Add-Type -AssemblyName WindowsBase
                         </Viewbox>
                         <TextBlock Text="Notepad++ Supply Chain IOC Scanner" FontSize="20" FontWeight="Bold" Foreground="#E8E8F0" VerticalAlignment="Center"/>
                     </StackPanel>
-                    <TextBlock Margin="32,4,0,0" FontSize="11.5" Foreground="#8888A8" Text="Lotus Blossom / Chrysalis Backdoor Detection + Remediation  --  v2.2"/>
+                    <TextBlock Margin="32,4,0,0" FontSize="11.5" Foreground="#8888A8" Text="Lotus Blossom / Chrysalis Backdoor Detection + Remediation  --  v2.3"/>
                 </StackPanel>
                 <StackPanel Grid.Column="1" VerticalAlignment="Center">
                     <TextBlock FontSize="10.5" Foreground="#7878A0" TextAlignment="Right">
@@ -473,6 +473,10 @@ $scanScript = {
         foreach($d in @(@{N='%APPDATA%\ProShow';P="$env:APPDATA\ProShow";D='Payload staging (Chain 1+2)'},@{N='%APPDATA%\Bluetooth';P="$env:APPDATA\Bluetooth";D='Chrysalis backdoor staging'})){
             if(Test-Path $d.P){$items=Get-ChildItem $d.P -Recurse -Force -EA SilentlyContinue;Enq 'Files' "$($d.N) directory" 'FOUND' "$($d.D) -- $($items.Count) items: $(($items.Name)-join', ')"}
             else{Enq 'Files' "$($d.N) directory" 'CLEAN' 'Not found'}}
+        # Hidden attribute check - Chrysalis NSIS installer sets Hidden on %AppData%\Bluetooth
+        $btDir="$env:APPDATA\Bluetooth";if(Test-Path $btDir){$btItem=Get-Item $btDir -Force -EA SilentlyContinue
+            if($btItem-and($btItem.Attributes-band[IO.FileAttributes]::Hidden)){Enq 'Files' 'Bluetooth dir (Hidden)' 'FOUND' 'Directory has Hidden attribute set -- matches Chrysalis NSIS installer behavior'}
+            elseif($btItem){Enq 'Files' 'Bluetooth dir (Hidden)' 'FOUND' 'Directory exists but is NOT hidden (atypical for Chrysalis)'}}
         # Legitimate directories that may contain malicious files - check for SPECIFIC artifacts only
         # USOShared is a legitimate Windows Update directory (USO = Update Session Orchestrator)
         $usoPath="$env:ProgramData\USOShared"; $usoMalware=@('svchost.exe','conf.c','libtcc.dll')
@@ -502,7 +506,7 @@ $scanScript = {
 
         Prog 53 'Checking persistence...'
         $rH=[System.Collections.Generic.List[string]]::new()
-        foreach($rk in @('HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run','HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce','HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce')){
+        foreach($rk in @('HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run','HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce','HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run')){
             try{if(Test-Path $rk){(Get-ItemProperty $rk -EA SilentlyContinue).PSObject.Properties|Where-Object{$_.Name-notmatch'^PS'}|ForEach-Object{$val=[string]$_.Value
                 foreach($pat in @('BluetoothService','ProShow','USOShared','svchost.*-nostdlib','svchost.*conf\.c','log\.dll')){if($val-match $pat){$rH.Add("$rk -- $($_.Name)");break}}}}}catch{}}
         if($rH.Count-gt 0){Enq 'Persist' 'Registry Run keys' 'FOUND' ($rH-join'; ')}else{Enq 'Persist' 'Registry Run keys' 'CLEAN' 'No suspicious entries'}
@@ -533,7 +537,7 @@ $scanScript = {
             if($ih){$dt=$ih|ForEach-Object{$pn=try{(Get-Process -Id $_.OwningProcess -EA Stop).ProcessName}catch{'?'};"$($_.RemoteAddress):$($_.RemotePort) ($pn)"};Enq 'Network' 'C2 IP connections' 'FOUND' ($dt-join'; ')}
             else{Enq 'Network' 'C2 IP connections' 'CLEAN' 'None'}}catch{Enq 'Network' 'C2 IP connections' 'ERROR' "Elevation needed"}
         try{$dns=Get-DnsClientCache -EA SilentlyContinue;$dh=@();if($dns){$dh=$dns|Where-Object{$e=$_.Entry;foreach($d in $c2Domains){if($e-like"*$d*"){return $true}};return $false}}
-            if($dh){Enq 'Network' 'DNS cache: C2' 'FOUND' "Resolved: $(($dh.Entry|Select-Object -Unique)-join', ')"}else{Enq 'Network' 'DNS cache: C2' 'CLEAN' 'No C2 domains'}}catch{Enq 'Network' 'DNS cache' 'ERROR' "$($_.Exception.Message)"}
+            if($dh){$fd=($dh.Entry|Select-Object -Unique)-join', ';$fp=if($fd-match'temp\.sh'){' (temp.sh may be false positive)'}else{''};Enq 'Network' 'DNS cache: C2' 'FOUND' "Resolved: $fd$fp"}else{Enq 'Network' 'DNS cache: C2' 'CLEAN' 'No C2 domains'}}catch{Enq 'Network' 'DNS cache' 'ERROR' "$($_.Exception.Message)"}
         try{$hf="$env:SystemRoot\System32\drivers\etc\hosts";if(Test-Path $hf){$nh=Get-Content $hf -EA Stop|Where-Object{$_-match'notepad'-and $_-notmatch'^\s*#'}
             if($nh){Enq 'Network' 'Hosts file' 'FOUND' "Entries: $($nh-join'; ')"}else{Enq 'Network' 'Hosts file' 'CLEAN' 'No redirections'}}}catch{Enq 'Network' 'Hosts file' 'ERROR' "$($_.Exception.Message)"}
         Prog 100 'Scan complete'
@@ -545,7 +549,7 @@ $scanScript = {
 function Build-ReportText {
     $sb = [System.Text.StringBuilder]::new()
     [void]$sb.AppendLine('=' * 80)
-    [void]$sb.AppendLine('  Notepad++ Supply Chain IOC Scanner v2.2 - Report')
+    [void]$sb.AppendLine('  Notepad++ Supply Chain IOC Scanner v2.3 - Report')
     [void]$sb.AppendLine('=' * 80)
     [void]$sb.AppendLine("  Machine  : $env:COMPUTERNAME")
     [void]$sb.AppendLine("  User     : $env:USERDOMAIN\$env:USERNAME")
@@ -657,7 +661,7 @@ $btnRemediate.Add_Click({
         if (Test-Path $f) { try { Remove-Item $f -Force -EA Stop; $log.Add("Removed file: $f") } catch { $log.Add("Failed removing $f - $($_.Exception.Message)") } } }
 
     # Clean registry
-    foreach ($rk in @('HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run','HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce','HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce')) {
+    foreach ($rk in @('HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run','HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce','HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run')) {
         try { if (Test-Path $rk) { (Get-ItemProperty $rk -EA SilentlyContinue).PSObject.Properties |
             Where-Object { $_.Name -notmatch '^PS' } | ForEach-Object { $val = [string]$_.Value
                 foreach ($pat in $ioc.PersistencePatterns) { if ($val -match $pat) {

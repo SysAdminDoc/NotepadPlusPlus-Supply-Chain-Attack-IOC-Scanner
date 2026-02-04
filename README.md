@@ -1,139 +1,148 @@
-# Notepad++ Supply Chain Attack IOC Scanner
+# Notepad++ Supply Chain IOC Scanner
 
-**Detect and remediate indicators of compromise from the Notepad++ supply chain attack (June - December 2025)**
+Comprehensive IOC scanner for the **Notepad++ supply chain compromise** (June-December 2025) attributed to the Chinese APT group **Lotus Blossom** (aka Billbug, Raspberry Typhoon, Spring Dragon).
 
-Attributed to Chinese APT **Lotus Blossom** (Billbug / Raspberry Typhoon), this attack compromised a Notepad++ hosting provider to hijack the WinGUp update mechanism, delivering the **Chrysalis backdoor**, Cobalt Strike beacons, and Metasploit payloads to targeted organizations.
+The attack hijacked the WinGUp update mechanism via hosting provider compromise to deliver the **Chrysalis backdoor**, Cobalt Strike beacons, and Metasploit payloads to targeted organizations.
 
-This tool provides both a **GUI** (WPF) and **CLI** scanner with full IOC coverage compiled from Kaspersky GReAT and Rapid7 Labs research, plus automated remediation capabilities.
+## Scripts
 
-<img width="1434" height="967" alt="2026-02-04 10_02_40-Notepad++ IOC Scanner v2 1" src="https://github.com/user-attachments/assets/21e257ad-fc4f-4580-b026-9f4844e27096" />
-
-## Quick Start
-
-**One-line run** (Run as Administrator in PowerShell):
-
-```powershell
-irm https://raw.githubusercontent.com/SysAdminDoc/NotepadPlusPlus-Supply-Chain-Attack-IOC-Scanner/refs/heads/main/Check-NotepadPlusPlusIOC-GUI.ps1 | iex
-```
-
-
----
+| Script | Description |
+|--------|-------------|
+| `Check-NotepadPlusPlusIOC.ps1` | **CLI scanner** - Ideal for RMM deployment (ConnectWise, Datto, NinjaRMM, etc.) |
+| `Check-NotepadPlusPlusIOC-GUI.ps1` | **GUI scanner + remediator** - Interactive WPF interface for technicians |
 
 ## Features
 
-### Detection
+### Detection Coverage
 
-- **Notepad++ version audit** &mdash; flags pre-8.8.9 (vulnerable) and pre-8.9.1 (partially patched) installations
-- **AutoUpdate.exe detection** &mdash; identifies the illegitimate binary planted by the attacker
-- **Malware staging directories** &mdash; scans `%APPDATA%\ProShow`, `%APPDATA%\Bluetooth`, and checks `ProgramData\USOShared` and `%APPDATA%\Adobe\Scripts` for specific malicious artifacts without false-flagging legitimate Windows content
-- **File hash verification** &mdash; 25 SHA-1 hashes (Kaspersky) + 16 SHA-256 hashes (Rapid7) checked against files in known staging paths
-- **Persistence mechanisms** &mdash; registry Run/RunOnce keys, Windows services, and scheduled tasks matching known IOC patterns
-- **Live process inspection** &mdash; malicious process names, GUP.exe C2 connections, fake `svchost.exe` from USOShared, and the Chrysalis mutex (`Global\Jdhfv_1.0.1`)
-- **Network indicators** &mdash; active TCP connections to 8 known C2 IPs, DNS cache entries for 6 C2 domains, and hosts file tampering for `notepad-plus-plus.org`
+- **Notepad++ version analysis** - Pre-8.8.9 = vulnerable, pre-8.9.1 = partially patched
+- **Malware staging directories** - `%APPDATA%\ProShow`, `%APPDATA%\Bluetooth`
+- **Hidden attribute detection** - Chrysalis NSIS installer sets Hidden on Bluetooth directory
+- **41 file hashes** - 25 SHA-1 (Kaspersky) + 16 SHA-256 (Rapid7)
+- **8 C2 IP addresses** - Malicious update hosts and C2 servers
+- **6 C2 domains** - Including api.skycloudcenter.com, wiresguard.com
+- **Cobalt Strike artifacts** - In `ProgramData\USOShared`
+- **Persistence mechanisms** - Registry Run keys (incl. WOW6432Node), services, scheduled tasks
+- **Running processes** - BluetoothService, ProShow, ConsoleApplication2, fake svchost
+- **Network connections** - Active C2 connections, DNS cache entries
+- **GUP.exe monitoring** - Connections to non-legitimate update sources
+- **Hosts file tampering** - notepad-plus-plus.org redirections
+- **Chrysalis mutex** - `Global\Jdhfv_1.0.1`
+- **AutoUpdate.exe** - Not a legitimate Notepad++ file
 
-### Remediation (GUI)
+### RMM/MSP Features (CLI)
 
-- **Process termination** &mdash; kills `BluetoothService`, `ProShow`, `ConsoleApplication2`, and fake `svchost.exe` instances
-- **File removal** &mdash; deletes malware staging directories and individual artifacts; preserves legitimate Windows directories (`USOShared`, `Adobe\Scripts`) while removing only malicious files within them
-- **Persistence cleanup** &mdash; scrubs registry Run keys, deletes the `BluetoothService` service, and removes compromised scheduled tasks
-- **C2 IP blocking** &mdash; creates an outbound Windows Firewall rule blocking all known C2 addresses (requires elevation)
-- **Confirmation dialog** &mdash; lists all planned actions before execution; logs every action to the results grid
+- **SYSTEM account support** - Automatically enumerates ALL user profiles when running as NT AUTHORITY\SYSTEM
+- **Exit codes** - `0` = clean, `1` = IOCs found (for RMM alerting)
+- **Export to file** - `-ExportPath` parameter for compliance documentation
+- **HKU registry access** - Checks HKEY_USERS for loaded user hives when running as SYSTEM
 
----
+### GUI Features
 
-## IOC Coverage
-
-| Category | Count | Source |
-|---|---|---|
-| SHA-1 hashes | 25 | Kaspersky GReAT |
-| SHA-256 hashes | 16 | Rapid7 Labs |
-| C2 IP addresses | 8 | Kaspersky / Rapid7 |
-| C2 domains | 6 | Kaspersky / Rapid7 |
-| Malware files | 12 | Combined |
-| Staging directories | 4 | Combined |
-| Persistence patterns | 6 | Combined |
-
----
+- **Dark-themed WPF interface** - Professional appearance
+- **Real-time scanning** - Progress bar and status updates
+- **One-click remediation** - Kill processes, delete files, clean registry, block C2 IPs
+- **Export/Copy reports** - Text and CSV formats
+- **Source links** - Direct links to Kaspersky, Rapid7, and official disclosure
 
 ## Usage
 
-### GUI Version
+### CLI (RMM Deployment)
+
+```powershell
+# Basic scan
+.\Check-NotepadPlusPlusIOC.ps1
+
+# Export report
+.\Check-NotepadPlusPlusIOC.ps1 -ExportPath "C:\Reports\npp-scan.txt"
+
+# RMM integration with exit code check
+.\Check-NotepadPlusPlusIOC.ps1 -ExportPath "C:\Logs\npp-scan.txt"
+if ($LASTEXITCODE -eq 1) {
+    # Alert: IOCs detected
+}
+```
+
+### GUI
 
 ```powershell
 .\Check-NotepadPlusPlusIOC-GUI.ps1
 ```
 
-- Click **Run Scan** to begin &mdash; results populate in real time with color-coded status
-- Select any row to view full details in the bottom pane
-- If IOCs are detected, the **Remediate IOCs** button activates (red)
-- **Export Report** saves a formatted `.txt` or `.csv` file
-- **Copy Results** places the full report on the clipboard
-- Source links in the title bar open the original research in your browser
+Or right-click > "Run with PowerShell"
 
-### CLI Version
+## RMM Deployment Notes
 
-```powershell
-# Standard scan
-.\Check-NotepadPlusPlusIOC.ps1
+When deploying via RMM tools (ConnectWise Automate, Datto RMM, NinjaRMM, etc.), the script runs as `NT AUTHORITY\SYSTEM`. Version 2.3+ automatically handles this by:
 
-# Export report to file
-.\Check-NotepadPlusPlusIOC.ps1 -ExportPath "C:\Reports\npp-scan.txt"
-```
+1. Detecting SYSTEM execution context
+2. Enumerating all user profiles via `HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList`
+3. Checking each user's `%APPDATA%` and `%LOCALAPPDATA%` paths
+4. Accessing user registry hives via `HKU:\{SID}\...` instead of `HKCU:`
 
----
+**Previous versions (pre-2.3) would miss user-profile IOCs when running as SYSTEM.**
 
-## Requirements
+## False Positive Notes
 
-- **PowerShell 5.1+** (ships with Windows 10/11)
-- **Windows 10 / 11 / Server 2016+**
-- **Run as Administrator** recommended for full coverage (network connections, services, scheduled tasks, firewall rules)
-- No external dependencies &mdash; uses only built-in .NET assemblies (`PresentationFramework`, `PresentationCore`, `WindowsBase`)
+### `C:\ProgramData\USOShared`
+This is a **legitimate Windows Update directory** (Update Session Orchestrator). The scanner only flags this directory if it contains specific malicious artifacts (`svchost.exe`, `conf.c`, `libtcc.dll`), not for mere existence.
 
----
+### `temp.sh` in DNS cache
+`temp.sh` is a legitimate anonymous file-sharing service that was used for data exfiltration in this campaign. DNS cache hits for `temp.sh` on developer workstations may be false positives. Investigate context before taking action.
 
-## Attack Background
+### `%APPDATA%\Adobe\Scripts`
+May be a legitimate Adobe directory. Only flagged if it contains `alien.ini` malware configuration.
 
-In mid-2025, Lotus Blossom compromised the hosting infrastructure serving Notepad++ updates. The WinGUp updater (pre-v8.8.9) lacked binary signature verification, allowing the attacker to serve trojanized `update.exe` payloads to selected targets via traffic redirection.
+## Remediation (GUI Only)
 
-Three distinct infection chains were identified:
+The GUI provides automated remediation that:
 
-| Chain | Mechanism | Payload |
-|---|---|---|
-| **1** | NSIS installer &rarr; `%APPDATA%\ProShow` | Cobalt Strike beacon via renamed TCC (`svchost.exe` + `conf.c`) |
-| **2** | NSIS installer &rarr; `%APPDATA%\ProShow` | Warbird code execution &rarr; Cobalt Strike |
-| **3** | DLL sideloading via renamed Bitdefender binary | Chrysalis backdoor (`BluetoothService.exe` + `log.dll`) |
+1. **Kills malicious processes** - BluetoothService, ProShow, ConsoleApplication2, fake svchost
+2. **Removes malware directories** - `%APPDATA%\ProShow`, `%APPDATA%\Bluetooth`
+3. **Deletes specific malware files** - Including files in legitimate directories
+4. **Cleans registry persistence** - Run keys including WOW6432Node
+5. **Removes BluetoothService service** - If present
+6. **Unregisters malicious scheduled tasks**
+7. **Creates firewall rule** - Blocks outbound to all known C2 IPs (requires elevation)
 
-**Targets:** Organizations in Vietnam, Philippines, El Salvador, and Australia (telecom, financial services, government, IT services). The attack was highly selective; most Notepad++ users were not affected.
+> **Important:** Export the report BEFORE remediating to preserve forensic evidence.
 
-**Resolution:** Notepad++ v8.9.1+ includes XMLDSig signature validation for updates. All attacker access was terminated by December 2, 2025.
+## Post-Remediation Steps
 
----
-
-## False Positive Handling
-
-The scanner avoids common false positives on legitimate system paths:
-
-- **`C:\ProgramData\USOShared`** &mdash; legitimate Windows Update directory (Update Session Orchestrator). Only flagged if the specific malicious files (`svchost.exe`, `conf.c`, `libtcc.dll`) are found inside it. ETL trace logs and update data are ignored.
-- **`%APPDATA%\Adobe\Scripts`** &mdash; legitimate Adobe directory. Only flagged if `alien.ini` (malware config) is present.
-- **`%APPDATA%\ProShow`** and **`%APPDATA%\Bluetooth`** &mdash; not legitimate Windows paths. Their existence is always flagged.
-- **Notepad++ plugins** &mdash; default bundled plugins (`mimeTools`, `NppConverter`, `NppExport`) generate a WARNING for manual review only, not a FOUND status.
-
----
+1. Update Notepad++ to v8.9.1+ via manual download from [GitHub releases](https://github.com/notepad-plus-plus/notepad-plus-plus/releases)
+2. Block `gup.exe` internet access via firewall or route updates through internal repository
+3. Rotate credentials on affected machines
+4. Check other machines with Notepad++ installed
+5. Review logs for lateral movement indicators
+6. Engage incident response team if confirmed compromise
 
 ## Sources
 
-- **Kaspersky GReAT** &mdash; [Notepad++ Supply Chain Attack Analysis](https://securelist.com/notepad-supply-chain-attack/118708/)
-- **Rapid7 Labs** &mdash; [TR: Chrysalis Backdoor &mdash; Dive into Lotus Blossom's Toolkit](https://www.rapid7.com/blog/post/tr-chrysalis-backdoor-dive-into-lotus-blossoms-toolkit/)
-- **Notepad++ Official** &mdash; [Hijacked Incident Info Update](https://notepad-plus-plus.org/news/hijacked-incident-info-update/)
+- **Kaspersky GReAT**: [Notepad++ Supply Chain Attack Analysis](https://securelist.com/notepad-supply-chain-attack/118708/)
+- **Rapid7 Labs**: [Chrysalis Backdoor Deep Dive](https://www.rapid7.com/blog/post/tr-chrysalis-backdoor-dive-into-lotus-blossoms-toolkit/)
+- **Notepad++ Official**: [Hijacked Incident Info Update](https://notepad-plus-plus.org/news/hijacked-incident-info-update/)
 
----
+## Requirements
 
-## Disclaimer
+- PowerShell 5.1+ (included in Windows 10/11, Server 2016+)
+- Windows 10/11 or Windows Server 2016+
+- GUI requires WPF (.NET Framework, included in Windows)
+- Administrator/elevation recommended for full detection capabilities
 
-This tool is provided for **defensive security purposes only**. It is designed to help system administrators and security teams detect and remediate a specific, documented threat. Always preserve forensic evidence before running remediation in a confirmed incident. This tool does not replace a full incident response investigation.
+## Version History
 
----
+| Version | Date | Changes |
+|---------|------|---------|
+| 2.3 | 2026-02-04 | SYSTEM account profile enumeration for RMM deployment; WOW6432Node registry coverage; Hidden attribute detection; Exit codes; temp.sh FP note; Bug fixes |
+| 2.2 | 2026-02-04 | USOShared false positive fix; Adobe\Scripts smart detection |
+| 2.1 | 2026-02-03 | Hidden Bluetooth directory detection |
+| 2.0 | 2026-02-02 | GUI remediator; comprehensive IOC coverage |
+| 1.0 | 2026-02-01 | Initial release |
 
 ## License
 
-MIT
+MIT License - Use freely for incident response and security assessment.
+
+## Author
+
+SysAdminDoc

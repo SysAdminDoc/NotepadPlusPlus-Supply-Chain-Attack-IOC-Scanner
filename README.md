@@ -4,6 +4,14 @@ Comprehensive IOC scanner for the **Notepad++ supply chain compromise** (June-De
 
 The attack hijacked the WinGUp update mechanism via hosting provider compromise to deliver the **Chrysalis backdoor**, Cobalt Strike beacons, and Metasploit payloads to targeted organizations.
 
+## Quick Start
+
+**One-line run** (Run as Administrator in PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/SysAdminDoc/npp-sc-scanner/refs/heads/main/NppScanner-GUI.ps1 | iex
+```
+
 ## Scripts
 
 | Script | Description |

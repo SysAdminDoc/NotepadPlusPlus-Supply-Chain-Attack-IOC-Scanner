@@ -1,5 +1,7 @@
 # Notepad++ Supply Chain IOC Scanner
 
+![Version](https://img.shields.io/badge/version-v8.8.9-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![Platform](https://img.shields.io/badge/platform-PowerShell-lightgrey)
+
 Comprehensive IOC scanner for the **Notepad++ supply chain compromise** (June-December 2025) attributed to the Chinese APT group **Lotus Blossom** (aka Billbug, Raspberry Typhoon, Spring Dragon).
 
 The attack hijacked the WinGUp update mechanism via hosting provider compromise to deliver the **Chrysalis backdoor**, Cobalt Strike beacons, and Metasploit payloads to targeted organizations.

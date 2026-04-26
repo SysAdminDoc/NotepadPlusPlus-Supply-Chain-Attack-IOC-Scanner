@@ -376,6 +376,15 @@ Add-Type -AssemblyName WindowsBase
 $reader = [System.Xml.XmlNodeReader]::new($xaml)
 $window = [System.Windows.Markup.XamlReader]::Load($reader)
 
+# codex-branding:start
+                try {
+                    $brandingIconPath = Join-Path $PSScriptRoot 'icon.ico'
+                    if (Test-Path $brandingIconPath) {
+                        $window.Icon = [System.Windows.Media.Imaging.BitmapFrame]::Create((New-Object System.Uri($brandingIconPath)))
+                    }
+                } catch {
+                }
+                # codex-branding:end
 $btnScan        = $window.FindName('btnScan')
 $btnRemediate   = $window.FindName('btnRemediate')
 $btnExport      = $window.FindName('btnExport')
